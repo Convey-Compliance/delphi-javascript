@@ -1,7 +1,7 @@
 ﻿unit jsintf;
 interface
 
-uses Classes, {ptrarray, namedarray,} TypInfo, js15decl, RTTI, types,
+uses AnsiStrings, Classes, {ptrarray, namedarray,} TypInfo, js15decl, RTTI, types,
   Generics.Collections, SysUtils, Windows, Controls, syncObjs, JSDbgServer, forms, dialogs;
 
 var
@@ -234,7 +234,6 @@ type
     fbooleanclass: PJSClass;
     fcx: PJSContext;
     fdateclass: PJSClass;
-    ffunctionclass: PJSClass;
     fglobal: PJSObject;
     fnativeglobal: TJSObject;
     fnumberclass: PJSClass;
@@ -254,8 +253,6 @@ type
     function Execute(Script: PJSObject; Scope: TJSObject = nil): boolean; overload;
 
     procedure GetStandardClasses;
-    function InternalCall(const Func: PJSFunction; Obj: PJSObject; var args: Array of TJSBase; rval: pjsval): boolean;
-    function InternalCallName(const Func: String; Obj: PJSObject; var args: Array of TJSBase; rval: pjsval): boolean;
     function InternalGet(const Name: String; Obj: PJSObject; var rval: jsval): boolean;
     function GetVersion: String;
     procedure SetDebugging(const Value: boolean);
@@ -291,8 +288,11 @@ type
     function Evaluate(const Code: String; scriptFileName: String = ''): boolean; overload;
     function Evaluate(const Code: String; var rval: jsval; scriptFileName: String = ''): boolean; overload;
 
-    function callFunction(functionName: AnsiString; var rval: jsval): boolean; overload;
-    function callFunction(functionName: AnsiString): boolean; overload;
+    function callFunction(const functionName: AnsiString; var rval: jsval):
+        boolean; overload;
+    function callFunction(const functionName: AnsiString): boolean; overload;
+    function callFunction(const functionName: AnsiString; const params: array of
+        const; var rval: jsval): boolean; overload;
 
     procedure GarbageCollect;
     procedure lockObject(Obj: PJSObject; Name: AnsiString = ''); overload;
@@ -357,7 +357,7 @@ type
 
     procedure Connect(AEngine: TJSEngine; AName: String; AParent: TJSObject); overload;
     procedure Connect(AEngine: TJSEngine; AName: String); overload;
-    function ToString: String;
+    function ToString: String; reintroduce;
 
     property Connected: boolean read FConnected;
     property Destroying: boolean read FDestroying write FDestroying;
@@ -520,21 +520,21 @@ begin
   end;
 end;
 
-function strdup(s: AnsiString): PAnsiChar;
+function strdup(const s: AnsiString): PAnsiChar;
 begin
   GetMem(Result, Length(s) + 1);
-  strCopy(Result, PAnsiChar(s));
+  AnsiStrings.strCopy(Result, PAnsiChar(s));
   // move(PAnsiChar(s)^, Result^, Length(s)+1);
 end;
 
-function GetGUID: AnsiString;
+function GetGUID: String;
 Var
   GUID: TGUID;
   psz: array [0 .. 256] of widechar;
 begin
   CoCreateGuid(GUID);
   StringFromGUID2(GUID, @psz, 256);
-  Result := POleStr(@psz);
+  Result := WideString(POleStr(@psz));
 end;
 
 function generateScriptName: string;
@@ -555,11 +555,12 @@ end;
 function JSBranchCallback(cx: PJSContext; script: PJSObject): JSBool; cdecl;
 begin
   JS_MaybeGC(cx);
+  Result := JS_FALSE;
 end;
 
 function JSMarkOp(cx: PJSContext; obj: PJSObject; arg: Pointer): uint32; cdecl;
 begin
-
+  Result := 0;
 end;
 
 procedure ErrorReporter(cx: PJSContext; message: PAnsiChar; report: PJSErrorReport); cdecl;
@@ -571,7 +572,7 @@ begin
   // exit;
 
   if report.FileName <> nil then
-    FileName := extractFileName(report.FileName)
+    FileName := extractFileName(String(AnsiString(report.FileName)))
   else
     FileName := 'typein:';
 
@@ -597,7 +598,7 @@ end;
 
 { TJSEngine }
 
-function TJSEngine.callFunction(functionName: AnsiString): boolean;
+function TJSEngine.callFunction(const functionName: AnsiString): boolean;
 var
   rval: jsval;
 begin
@@ -605,10 +606,11 @@ begin
 
 end;
 
-function TJSEngine.callFunction(functionName: AnsiString; var rval: jsval): boolean;
+function TJSEngine.callFunction(const functionName: AnsiString; var rval:
+    jsval): boolean;
 var
   r: Integer;
-  vp, argv: jsval;
+  vp: jsval;
 begin
 
   Result := false;
@@ -629,24 +631,20 @@ var
   Name: UTF8String;
 begin
   if FileName = '' then
-    name := generateScriptName
+    name := UTF8String(generateScriptName)
   else
-    name := FileName;
+    name := UTF8String(FileName);
 
   // Register script source
   if FDebugging then
-     FDebuggerScripts.AddOrSetValue(name, Code);
+     FDebuggerScripts.AddOrSetValue(String(name), Code);
 
   Result := JS_CompileUCScript(fcx, fglobal, PWideChar(Code), Length(Code), PAnsiChar(Name), 0);
 end;
 
 constructor TJSEngine.Create(MaxMemory: Cardinal);
 var
-  d: word;
-  em: TArithmeticExceptionMask;
   bool: JSBool;
-  v: jsval;
-  ver: JSVersion;
 begin
 {$ifdef CPUX64}
   ClearExceptions(false);
@@ -748,6 +746,40 @@ begin
   inherited;
 end;
 
+function TJSEngine.callFunction(const functionName: AnsiString; const params:
+    array of const; var rval: jsval): boolean;
+var
+  r, i: Integer;
+  vp : jsval;
+  argv : array of jsval;
+begin
+  Result := false;
+  if JS_LookupProperty(Context, Global.JSObject, PAnsiChar(functionName), @vp) = js_true then
+  begin
+    if (not JSValIsVoid(vp)) and (JSValIsObject(vp)) then
+    begin
+      SetLength(argv, length(Params));
+      for i  := low(argv) to high(argv) do
+        case Params[i].VType of
+          vtInteger       : argv[i] := IntToJSVal(Params[i].VInteger);
+          vtBoolean       : argv[i] := BoolToJSVal(Params[i].VBoolean);
+          vtExtended      : argv[i] := DoubleToJSVal(Params[i].VExtended^);
+          vtPointer,
+          vtObject        : argv[i] := JSObjectToJSVal(Params[i].VPointer);
+          vtWideChar      : argv[i] := StringToJSVal(Context, Params[i].VWideChar);
+          vtPWideChar     : argv[i] := StringToJSVal(Context, Params[i].VPWideChar);
+          vtWideString    : argv[i] := StringToJSVal(Context, WideString(Params[i].VWideString));
+          vtUnicodeString : argv[i] := StringToJSVal(Context, UnicodeString(Params[i].VUnicodeString));
+          else raise Exception.CreateFmt('Type [%d] not supported', [Params[i].VType]);
+        end;
+      r := JS_CallFunctionValue(Context, Global.JSObject, vp, length(argv), @argv[0], @rval);
+      Result := true;
+
+    end;
+  end;
+
+end;
+
 function TJSEngine.Evaluate(const Code: String; Scope: TJSObject; scriptFileName: String): boolean;
 begin
   Result := Scope.Evaluate(Code, scriptFileName);
@@ -766,13 +798,13 @@ end;
 function TJSEngine.EvaluateFile(const FileName: String; Scope: TJSObject): boolean;
 var
   filenameutf8: UTF8String;
-  s, Code: string;
+  Code: string;
   rval: jsval;
 begin
   if Scope = nil then
     Scope := fnativeglobal;
 
-  filenameutf8 := FileName;
+  filenameutf8 := UTF8String(FileName);
   Code := TJSScript.LoadScript(FileName);
   CheckDebugBreak(self, code);
 
@@ -802,15 +834,14 @@ end;
 
 procedure TJSEngine.GarbageCollect;
 begin
-  //JS_GC(fcx);
-  JS_MaybeGC(fcx);
+  JS_GC(fcx);
+  //JS_MaybeGC(fcx);
 end;
 
 procedure TJSEngine.GetStandardClasses;
 var
   Obj: PJSObject;
   v: jsval;
-  jsarr: PJSObject;
 
   function Eval(const str: String): jsval;
   var
@@ -855,39 +886,7 @@ end;
 
 function TJSEngine.GetVersion: String;
 begin
-  Result := JS_GetImplementationVersion;
-end;
-
-function TJSEngine.InternalCall(const Func: PJSFunction; Obj: PJSObject; var args: Array of TJSBase;
-  rval: pjsval): boolean;
-var
-  myargs: TArray<jsval>;
-  i: Integer;
-begin
-  if (Obj = nil) then
-    Obj := fglobal;
-
-  if (Length(args) = 0) then
-    Result := (JS_CallFunction(fcx, Obj, Func, 0, nil, rval) = js_true)
-  else
-  begin
-    SetLength(myargs, Length(args));
-    for i := 0 to Length(args) - 1 do
-      myargs[i] := args[i].JScriptVal;
-
-    Result := (JS_CallFunction(fcx, Obj, Func, Length(myargs), @myargs[0], rval) = js_true);
-    SetLength(myargs, 0);
-  end;
-end;
-
-function TJSEngine.InternalCallName(const Func: String; Obj: PJSObject; var args: array of TJSBase;
-  rval: pjsval): boolean;
-var
-  fval: jsval;
-begin
-  JS_GetUCProperty(fcx, Obj, PWideChar(Func), Length(Func), @fval);
-
-  Result := InternalCall(JS_ValueToFunction(fcx, fval), Obj, args, rval);
+  Result := String(JS_GetImplementationVersion);
 end;
 
 function TJSEngine.InternalGet(const Name: String; Obj: PJSObject; var rval: jsval): boolean;
@@ -916,8 +915,7 @@ var
   m: TRttiMethod;
   params: TArray<TRttiParameter>;
   args: TArray<TValue>;
-  v, methodResult: TValue;
-  ppp: pointer;
+  methodResult: TValue;
   argv: pjsval;
   jsobj: pjsobject;
 begin
@@ -1008,7 +1006,6 @@ end;
 procedure TJSEngine.registerClass(AClass: TClass; AClassFlags: TJSClassFlagAttributes);
 var
   p: TJSClassProto;
-  i: IInterface;
 begin
 
   for p in FDelphiClasses.Values do
@@ -1044,7 +1041,6 @@ var
   a: TCustomAttribute;
   methods: TJSFunctionsDynArray;
   method: TJSMethod;
-  f: TRttiField;
   i: integer;
   p: TRttiParameter;
 begin
@@ -1082,7 +1078,7 @@ begin
       TJSClassProto.DefineEnum(Fcx, fnativeglobal, p.ParamType); // TRttiType
     FMethodNamesMap.Add(methodName, method);
     SetLength(methods, Length(methods) + 1);
-    methods[high(methods)].Name := strdup(methodName);
+    methods[high(methods)].Name := strdup(AnsiString(methodName));
     methods[high(methods)].Call := @TJSEngine.JSGlobalMethodCall;
     methods[high(methods)].nargs := Length(m.GetParameters);
     methods[high(methods)].flags := 0;
@@ -1141,7 +1137,6 @@ var
   i: Integer;
   st: TRttiSetType;
   ot: TRttiOrdinalType;
-  ename: string;
   Consts: array of JSConstDoubleSpec;
   //proc: TIntToIdent;
 
@@ -1401,9 +1396,6 @@ begin
 end;
 
 destructor TJSObject.Destroy;
-var
-  rval: jsval;
-  p: Pointer;
 begin
   // fnatives.Free;
 {  Destroying := True;
@@ -1692,8 +1684,6 @@ begin
 end;
 
 procedure TJSScript.Execute(AScope: TJSObject);
-var
-  scriptObj: PJSObject;
 begin
   if AScope = NIL then
   begin
@@ -1889,8 +1879,6 @@ class procedure TJSClassProto.DefineEnum(cx: PJSContext; Obj: TJSObject; pt: TRt
     i: Integer;
     st: TRttiSetType;
     ot: TRttiOrdinalType;
-    ename: string;
-    proc: TIntToIdent;
 
   begin
     if pt = nil then exit;
@@ -1951,18 +1939,12 @@ var
   f: TRttiField;
   // a: TRttiParameter;
 
-  tinyid: shortInt;
-  jsobj: PJSObject;
-  jsp: PJSObject;
-  j,i: Integer;
   Enums: TDictionary<string, Integer>;
   a: TCustomAttribute;
   exclude: boolean;
   clFlags: TJSClassFlagAttributes;
   defaultCtorSimple, defaultCtor: TRttiMethod;
 
-  clctx: TRttiContext;
-  clt: TRttiType;
   param: TRttiParameter;
   params: TArray<TRttiParameter>;
 
@@ -1975,8 +1957,6 @@ var
     i: Integer;
     st: TRttiSetType;
     ot: TRttiOrdinalType;
-    ename: string;
-    proc: TIntToIdent;
     procedure defineEnum(ename: string; v: Integer);
     begin
 
@@ -1986,7 +1966,7 @@ var
       Enums.Add(ename, v);
       SetLength(FConsts, Length(FConsts) + 1);
       FConsts[high(FConsts)].dval := v;
-      FConsts[high(FConsts)].Name := strdup(ename);
+      FConsts[high(FConsts)].Name := strdup(AnsiString(ename));
       FConsts[high(FConsts)].flags := JSPROP_ENUMERATE or JSPROP_READONLY or JSPROP_PERMANENT;
     end;
 
@@ -2032,7 +2012,7 @@ var
   begin
     result:=False;
     for Prop in Fclass_props  do
-     if SameText(PropName, Prop.Name) then
+     if SameText(PropName, String(Prop.Name)) then
      begin
        Result:=True;
        break;
@@ -2058,7 +2038,7 @@ begin
   if FRttiType = NIL then
     raise Exception.Create('Fatal: RttiContext.getClass failed');
 
-  clName := FRttiType.Name;
+  clName := AnsiString(FRttiType.Name);
   clFlags := AClassFlags;
   DuplicateStrings:= TStringList.Create;
   //DuplicateStrings.Sorted := true;
@@ -2071,7 +2051,7 @@ begin
   for a in FRttiType.GetAttributes do
   begin
     if a is JSClassNameAttribute then
-      clName := JSClassNameAttribute(a).FClassName
+      clName := AnsiString(JSClassNameAttribute(a).FClassName)
     else if a is JSClassFlagsAttribute then
       clFlags := JSClassFlagsAttribute(a).FClassFlags;
   end;
@@ -2136,7 +2116,7 @@ begin
        freeExists := methodName = 'Free';
 
     SetLength(Fclass_methods, Length(Fclass_methods) + 1);
-    Fclass_methods[high(Fclass_methods)].Name := strdup(methodName);
+    Fclass_methods[high(Fclass_methods)].Name := strdup(AnsiString(methodName));
     Fclass_methods[high(Fclass_methods)].Call := @TJSClass.JSMethodCall;
     Fclass_methods[high(Fclass_methods)].nargs := Length(Params);
     Fclass_methods[high(Fclass_methods)].flags := JSPROP_ENUMERATE;//JSPROP_SHARED or JSPROP_READONLY or JSPROP_ENUMERATE or JSPROP_PERMANENT;
@@ -2182,7 +2162,7 @@ begin
 
     SetLength(Fclass_indexedProps, Length(Fclass_indexedProps) + 1);
     Fclass_indexedProps[high(Fclass_indexedProps)].flags := JSPROP_SHARED or JSPROP_READONLY or JSPROP_ENUMERATE or JSPROP_PERMANENT;
-    Fclass_indexedProps[high(Fclass_indexedProps)].Name := strdup(ip.Name);
+    Fclass_indexedProps[high(Fclass_indexedProps)].Name := strdup(AnsiString(ip.Name));
     Fclass_indexedProps[high(Fclass_indexedProps)].getter := @TJSClass.JSIndexedPropRead;
     Fclass_indexedProps[high(Fclass_indexedProps)].tinyid := 0;//High(Fclass_indexedProps) - 127;
 
@@ -2223,7 +2203,7 @@ begin
 
     SetLength(Fclass_fields, Length(Fclass_fields) + 1);
     Fclass_fields[high(Fclass_fields)].flags := JSPROP_SHARED or JSPROP_ENUMERATE or JSPROP_PERMANENT or JSPROP_READONLY;
-    Fclass_fields[high(Fclass_fields)].Name := strdup(f.Name);
+    Fclass_fields[high(Fclass_fields)].Name := strdup(AnsiString(f.Name));
     Fclass_fields[high(Fclass_fields)].getter := @TJSClass.JSFieldRead;
     Fclass_fields[high(Fclass_fields)].tinyid := 0;//High(Fclass_fields) - 127;
 
@@ -2267,7 +2247,7 @@ begin
 
     SetLength(Fclass_props, Length(Fclass_props) + 1);
     Fclass_props[high(Fclass_props)].flags := JSPROP_ENUMERATE or JSPROP_PERMANENT or JSPROP_SHARED;
-    Fclass_props[high(Fclass_props)].Name := strdup(p.Name);//PAnsiChar(High(Fclass_props));//strdup(p.Name);
+    Fclass_props[high(Fclass_props)].Name := strdup(AnsiString(p.Name));//PAnsiChar(High(Fclass_props));//strdup(p.Name);
     if p.IsReadable then
       Fclass_props[high(Fclass_props)].getter := @TJSClass.JSPropRead;
 
@@ -2393,14 +2373,10 @@ end;
 
 function TJSClassProto.getJSClassName: string;
 begin
-  Result := FJSClass.Name;
+  Result := String(FJSClass.Name);
 end;
 
 procedure TJSClassProto.JSInitClass(AEngine: TJSEngine);
-var
-  B: JSBool;
-  ctorObj: PJSObject;
-  i: Integer;
 begin
   if FJSClassProto = nil then
   begin
@@ -2429,14 +2405,13 @@ class function TJSClass.JSMethodCall(cx: PJSContext; argc: uintN; vp: pjsval): J
 var
   
   Obj: TJSClass;
-  ptr, p: Pointer;
+  p: Pointer;
   m: TRttiMethod;
   methodResult: TValue;
   methodName: string;
   t: TRttiType;
   args: TArray<TValue>;
   eng: TJSEngine;
-  JSClassName: PAnsiChar;
   params: TArray<TRttiParameter>;
   func: PJSFunction;
 
@@ -2663,7 +2638,7 @@ class function TJSClass.JSPrintf(JSEngine: TJSEngine; const fmt: String; argc: I
 var
   jsArgs: pjsval_ptr;
   pFmt, prev, fp, sp, p: PWideChar;
-  specLen, len: Integer;
+  len: Integer;
   wfmt, literal: String;
   nArg: Integer;
   nDecSep: char;
@@ -2674,8 +2649,6 @@ var
   FormatSettings: TFormatSettings;
 
   vDouble: Double;
-  vInteger: Integer;
-  JS: PJSString;
 
   function nextSpec(p: PWideChar): PWideChar;
   begin
@@ -2709,6 +2682,7 @@ var
 
 begin
 
+  padChar := #0;
   jsArgs := pjsval_ptr(args);
   nArg := 0;
   Result := '';
@@ -2888,18 +2862,17 @@ end;
 
 class function TJSClass.JSPropRead(cx: PJSContext; jsobj: PJSObject; id: jsid; vp: pjsval): JSBool;
 var
-  str, propName: String;
+  propName: String;
   p: Pointer;
   Obj: TJSClass;
   t: TRttiType;
   prop: TRttiProperty;
-  propIndex: Integer;
   v: jsval;
   propValue: TValue;
   propClass: TJSClass;
-  classObj: PJSObject;
   vid: jsval;
 begin
+  Result := JS_FALSE;
 
   //OutputDebugString(PChar(Format('Before.PropRead: %.2f', [MBytes(CurrentMemoryUsage)])));
   p := JS_GetPrivate(cx, jsobj);
@@ -2925,7 +2898,7 @@ begin
   if JSValIsString(vid) then
      propName := JSValToString(cx, vid)
   else
-     propName := Obj.FClassProto.Fclass_props[JSValToInt(vid) + 127].Name;
+     propName := String(Obj.FClassProto.Fclass_props[JSValToInt(vid) + 127].Name);
 
 
   prop := t.getProperty(propName);
@@ -2944,19 +2917,18 @@ end;
 
 class function TJSClass.JSPropReadClass(cx: PJSContext; jsobj: PJSObject; id: jsid; vp: pjsval): JSBool;
 var
-  propName: String;
   p: Pointer;
   Obj: TJSClass;
   t: TRttiType;
 {$IF CompilerVersion >= 23}
   prop: TRttiIndexedProperty;
 {$ifend}
-  propIndex: Integer;
   iObj: TJSIndexedProperty;
   v: TValue;
   idx: integer;
   vid: jsval;
 begin
+  Result := JS_FALSE;
   p := JS_GetPrivate(cx, jsobj);
   if p = nil then
     exit;
@@ -3025,6 +2997,7 @@ var
   vid, jv: jsval;
 begin
   //debugbreak;
+  Result := JS_FALSE;
   p := JS_GetPrivate(cx, jsobj);
   if p = nil then
   begin
@@ -3048,7 +3021,7 @@ begin
   if JSValIsString(vid) then
      propName := JSValToString(cx, vid)
   else
-     propName := Obj.FClassProto.Fclass_props[JSValToInt(vid) + 127].Name;
+     propName := String(Obj.FClassProto.Fclass_props[JSValToInt(vid) + 127].Name);
 
 //  if propName = 'Position' then
 //  begin
@@ -3136,15 +3109,9 @@ var
   len: jsuint;
   i: Integer;
   eng: TJSEngine;
-  elType: PTypeInfo;
   Values: array of TValue;
-  v: TValue;
   typeData: PTypeData;
   dDate: TDateTime;
-  st: TRttiSetType;
-  pt: TRttiType;
-  ot: TRttiOrdinalType;
-
   L: LongWord;
   W: Word;
   B: Byte;
@@ -3156,8 +3123,7 @@ var
   ClassInstance: TRttiInstanceType;
   constructorMethod: TRttiMethod;
   prop: TRttiProperty;
-  clasp: PJSClass;
-  str, boolStr: string;
+  str : string;
 
 begin
   eng := TJSClass.JSEngine(cx);
@@ -3395,14 +3361,7 @@ procedure TJSClass.NewJSObject(Engine: TJSEngine; JSObjectName: string; AInstanc
   AClassFlags: TJSClassFlagAttributes);
 var
   B: JSBool;
-  iter: PJSObject;
-  id: jsid;
-  nextobj: PJSObject;
   vp: jsval;
-  n: string;
-  i: integer;
-  p: TJSClassProto;
-
 
   function getClassProto(AClassName: String): TJSClassProto;
   var
@@ -3470,8 +3429,6 @@ end;
 
 procedure TJSClass.Notification(AClass: TJSClass; Operation: TOperation);
 var
-  I: Integer;
-  v: TJSClass;
   p: TPair<string, TJSClass>;
 begin
   if (Operation = opRemove) and (AClass <> nil) then
@@ -3540,17 +3497,13 @@ var
   classProto: TJSClassProto;
   v: TValue;
   jsarr, jsobj: PJSObject;
-  vr, val: jsval;
+  val: jsval;
   argv: array[0..10] of jsval;
   oDate: PJSObject;
   propClass, retClass: TJSClass;
 
   RttiType: TRttiType;
   field: TRttiField;
-  p: pointer;
-  bb: jsbool;
-  clasp: PJSClass;
-
 begin
   Result := JSVAL_NULL;
 
@@ -3756,8 +3709,6 @@ begin
 end;
 
 destructor TJSClass.Destroy;
-var
-  i: Integer;
 begin
 //  inc(NumObjsFree);
 
@@ -3845,7 +3796,6 @@ var
   params: TArray<TRttiParameter>;
   callee, jsObj: PJSObject;
   argv: pjsval;
-  func: PJSFunction;
 begin
   Result := js_true;
   eng := TJSClass.JSEngine(cx);
@@ -3861,7 +3811,7 @@ begin
   jsObj := JS_NewObjectForConstructor(cx, vp);
 
   clasp := JS_GetClass(jsobj);
-  JSClassName := clasp.Name;
+  JSClassName := String(clasp.Name);
   if eng.FDelphiClasses.TryGetValue(JSClassName, defClass) then
   begin
     // Call objects javascript ctor methods
@@ -3921,7 +3871,7 @@ begin
         if ctor <> nil then
         begin
           args := nil;
-          if Length(m.GetParameters) > 0 then
+          if Length(ctor.GetParameters) > 0 then
           begin
 
             args := TJSClass.JSArgsToTValues(ctor.GetParameters, cx, jsobj, argc, argv);
@@ -3970,19 +3920,11 @@ end;
 class function TJSClass.JSArgsToTValues(params: TArray<TRttiParameter>; cx: PJSContext; jsobj: PJSObject; argc: uintN;
   argv: pjsval): TArray<TValue>;
 var
-  i: Integer;
-  pObj: PJSObject;
+  i: Cardinal;
   param: TRttiParameter;
-  vp: jsval;
   nativeParams: TJSNativeCallParams;
-  field: TRttiField;
-  P: Pointer;
-  rec: TRttiRecordType ;
 
   function getDefaultValue(t: PTypeInfo): TValue;
-  var
-    typeData: PTypeData;
-
   begin
     case t^.Kind of
       tkEnumeration:
@@ -4074,39 +4016,32 @@ begin
 
   if JS_CallFunctionName(cx, oDate, PAnsiChar(AnsiString('getDate')), 0, nil, @vp) = JS_FALSE then
      exit
-  else if JSValIsInt(vp) then
-     d := JSValToInt(vp);
+  else d := JSValToInt(vp);
 
   if JS_CallFunctionName(cx, oDate, PAnsiChar(AnsiString('getMonth')), 0, nil, @vp) = JS_FALSE then
      exit;
-  if JSValIsInt(vp) then
-      m := JSValToInt(vp) + 1;
+  m := JSValToInt(vp) + 1;
 
   if JS_CallFunctionName(cx, oDate, PAnsiChar(AnsiString('getFullYear')), 0, nil, @vp) = JS_FALSE then
      exit;
 
-  if JSValIsInt(vp) then
-      Y := JSValToInt(vp);
+  Y := JSValToInt(vp);
 
   if JS_CallFunctionName(cx, oDate, PAnsiChar(AnsiString('getHours')), 0, nil, @vp) = JS_FALSE then
      exit;
-  if JSValIsInt(vp) then
-      h := JSValToInt(vp);
+  h := JSValToInt(vp);
 
   if JS_CallFunctionName(cx, oDate, PAnsiChar(AnsiString('getMinutes')), 0, nil, @vp) = JS_FALSE then
      exit;
-  if JSValIsInt(vp) then
-      mn := JSValToInt(vp);
+  mn := JSValToInt(vp);
 
   if JS_CallFunctionName(cx, oDate, PAnsiChar(AnsiString('getSeconds')), 0, nil, @vp) = JS_FALSE then
      exit;
-  if JSValIsInt(vp) then
-      s := JSValToInt(vp);
+  s := JSValToInt(vp);
 
   if JS_CallFunctionName(cx, oDate, PAnsiChar(AnsiString('getMilliseconds')), 0, nil, @vp) = JS_FALSE then
      exit;
-  if JSValIsInt(vp) then
-      ml := JSValToInt(vp);
+  ml := JSValToInt(vp);
 
   dDate := encodeDateTime(Y, m, d, h, mn, s, ml);
   Result := true;
@@ -4124,11 +4059,10 @@ var
   p: Pointer;
   Obj: TJSClass;
   t: TRttiType;
-  propIndex: Integer;
   f: TRttiField;
   vid, v: jsval;
 begin
-
+  Result := JS_FALSE;
 
   p := JS_GetPrivate(cx, jsobj);
   if p = nil then
@@ -4143,7 +4077,8 @@ begin
     end;
   end;
 
-  if p = nil then exit;
+  if p = nil
+    then exit;
 
   JS_IdToValue(cx, id, @vid);
   Obj := TJSClass(p);
@@ -4166,17 +4101,14 @@ class function TJSClass.JSIndexedPropRead(cx: PJSContext; jsobj: PJSObject; id: 
 var
   propName: String;
   p: Pointer;
-  propClass, Obj: TJSClass;
+  Obj: TJSClass;
   t: TRttiType;
   prop: TRttiIndexedProperty;
-  propIndex: Integer;
-  jsarr: PJSObject;
-  v: TValue;
   iObj: TJSIndexedProperty;
   vid: jsval;
-  propValue: TValue;
 begin
   p := JS_GetPrivate(cx, jsobj);
+  Result := js_False;
   if p = nil then
     exit;
 

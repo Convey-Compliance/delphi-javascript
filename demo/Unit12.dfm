@@ -38,4 +38,13 @@ object Form12: TForm12
     Height = 265
     TabOrder = 2
   end
+  object BitBtn1: TBitBtn
+    Left = 64
+    Top = 184
+    Width = 75
+    Height = 25
+    Caption = 'BitBtn1'
+    TabOrder = 3
+    OnClick = BitBtn1Click
+  end
 end

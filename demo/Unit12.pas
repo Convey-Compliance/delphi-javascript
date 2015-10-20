@@ -4,7 +4,7 @@ interface
 
 uses
   Windows, Messages, SysUtils, Variants, Classes, Graphics,
-  Controls, Forms, Dialogs, js15decl,jsintf, StdCtrls;
+  Controls, Forms, Dialogs, js15decl,jsintf, StdCtrls, Vcl.Buttons;
 
 type
 
@@ -19,6 +19,8 @@ type
     Edit1: TEdit;
     Edit2: TEdit;
     Memo1: TMemo;
+    BitBtn1: TBitBtn;
+    procedure BitBtn1Click(Sender: TObject);
     procedure FormCreate(Sender: TObject);
     procedure FormDestroy(Sender: TObject);
   private
@@ -53,15 +55,42 @@ uses RTTI, typinfo;
 
 {$R *.dfm}
 
+procedure TForm12.BitBtn1Click(Sender: TObject);
+var
+  i : integer;
+  t : Cardinal;
+  res : jsval;
+begin
+  t := GetTickCount;
+  memo1.lines.BeginUpdate;
+  for i := 1 to 100000 do
+    begin
+      //if not FJSEngine.Evaluate('testStr("hello")', res) then
+      if not FJSEngine.callFunction('testStr', ['hello', 123], res) then
+        raise Exception.Create('Error Message');
+      //memo1.lines.add(JSValToString(FJSEngine.Context, res));
+      if i mod 1000 = 0 then
+        FJSEngine.GarbageCollect;
+    end;
+  memo1.lines.EndUpdate;
+  ShowMessage(IntToStr(GetTickCount - t));
+end;
+
 procedure TForm12.FormCreate(Sender: TObject);
 begin
   FDT := now;
   FJSEngine := TJSEngine.Create;
   FJSEngine.registerGlobalFunctions(TJSGlobalFunctions);
-  FJSEngine.registerClasses([TStreamWriter,TEdit, TForm, TLabel, TCheckBox, TFileStream]);
+  FJSEngine.registerClasses([TStreamWriter,TEdit, TForm, TLabel, TCheckBox, TFileStream, TStringList], [cfaInheritedMethods,     // Publish inherited methods
+                                   cfaProtectedMethods,     // publish protected methods
+                                   cfaProtectedFields,
+                                   cfaInheritedProperties,  // Publish inherited properties
+                                   cfaOwnObject,            // Free object on javascript destructor
+                                   cfaGlobalFields,         // Register Private fields as properties to global object
+                                   cfaGlobalProperties]);
   FJSAppObject:= TJSAppObject.CreateJSObject(FJSEngine, 'App') ;
   //FJSAppObject.JSObject
-  FJSAppObject.JSObject.Evaluate('this.testCall();');
+  //FJSAppObject.JSObject.Evaluate('this.testCall();');
   TJSClass.CreateJSObject(Self, FJSEngine, 'MainForm', [cfaInheritedMethods, cfaInheritedProperties]);
 //  FJSEngine.Evaluate(TJSScript.LoadScript('test.js'), ':ApplicationInitScript:');
   FJSEngine.EvaluateFile('test.js');

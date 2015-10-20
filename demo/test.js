@@ -11,13 +11,23 @@ const fileName = 'd:\\temp\\n.txt';
 
 function OnExit(Sender)
 {
-  ShowMessage('OnExit');
+  //ShowMessage('OnExit');
   Sender.Text  = 'OnExit fired...';
 }
 
 function FormMouseUp(Sender, Button, Shift, X, Y)
 {
   Sender.Memo1.Lines.Add('FormMouseUp: '+Button);
+}
+
+function testStr(param, param2)
+{
+  var num = 15;
+  var list = new TStringList();
+  list.Add("hey!");
+  var s = "Hello" + " " + " World" + num.toString() + param + " " + param2.toString() + list[0];
+  delete list;
+  return s;
 }
 
 function main()
@@ -37,7 +47,7 @@ function main()
 
    MainForm.TestDateTime = ad;
 
-   ShowMessage('Test datetime '+ad);
+   //ShowMessage('Test datetime '+ad);
    if (FileExists(fileName))
    {
       var file = new TFileStream(fileName, fmOpenRead);
